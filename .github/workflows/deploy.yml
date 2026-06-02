@@ -1,0 +1,53 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: |
+          npm install
+          npm test
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Login to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, push image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/devops-pipeline:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/devops-pipeline:$IMAGE_TAG
+          docker tag $ECR_REGISTRY/devops-pipeline:$IMAGE_TAG $ECR_REGISTRY/devops-pipeline:latest
+          docker push $ECR_REGISTRY/devops-pipeline:latest
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            aws ecr get-login-password --region ap-south-1 | \
+              sudo docker login --username AWS --password-stdin 469510588722.dkr.ecr.ap-south-1.amazonaws.com
+            sudo docker pull 469510588722.dkr.ecr.ap-south-1.amazonaws.com/devops-pipeline:latest
+            sudo docker stop my-app || true
+            sudo docker rm my-app || true
+            sudo docker run -d --name my-app -p 80:3000 \
+              469510588722.dkr.ecr.ap-south-1.amazonaws.com/devops-pipeline:latest
